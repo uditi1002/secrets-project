@@ -8,6 +8,8 @@ const dotenv = require('dotenv');
 const session = require('express-session');
 const passport = require('passport');
 const passportLocalMongoose = require('passport-local-mongoose');
+const GoogleStrategy = require('passport-google-oauth20').Strategy;
+const findOrCreate = require('mongoose-findorcreate');
 
 dotenv.config({path: "secrets.env"});
 
@@ -33,10 +35,13 @@ mongoose.connect(process.env.URL);
 
 const userSchema = new mongoose.Schema({
     email: String,
-    password: String
+    password: String,
+    googleId: String,
+    secret: String
 });
 
 userSchema.plugin(passportLocalMongoose);
+userSchema.plugin(findOrCreate);
 
 const User = mongoose.model("User", userSchema);
 
@@ -50,11 +55,38 @@ passport.deserializeUser(function(user, done) {
     done(null, user);
 });
 
+passport.use(new GoogleStrategy({
+    clientID: process.env.CLIENT_ID,
+    clientSecret: process.env.CLIENT_SECRET,
+    callbackURL: "http://localhost:3000/auth/google/secrets"
+  },
+  function(accessToken, refreshToken, profile, cb) {
+    User.findOrCreate({ googleId: profile.id }, function (err, user) {
+      return cb(err, user);
+    });
+  }
+));
+
 app.route("/")
 
     .get( async (req, res) => {
         res.render("home");
     });
+
+app.route("/auth/google")
+
+    .get(
+        passport.authenticate("google", { scope: ["profile"] })
+    );
+
+app.route("/auth/google/secrets")
+
+    .get(
+        passport.authenticate("google", { failureRedirect: "/login" }),
+        async(req, res) => {
+            res.redirect("/secrets");
+        }
+    );
 
 app.route("/login")
 
@@ -102,12 +134,13 @@ app.route("/register")
 app.route("/secrets")
 
     .get( async (req, res) => {
-        if (req.isAuthenticated()){
-            res.render("secrets");
-        }
-        else {
-            res.redirect("/login");
-        }
+        User.find({"secret": {$ne: null}})
+        .then(foundUsers => {
+            if (foundUsers){
+                res.render("secrets", {userWithSecrets: foundUsers})
+            }
+        })
+        .catch(err => res.send(err));
     });
 
 app.route("/logout")
@@ -120,6 +153,33 @@ app.route("/logout")
                 res.redirect('/');
             }
         });
+    });
+
+app.route("/submit")
+
+    .get( async (req, res) => {
+        if (req.isAuthenticated()){
+            res.render("submit");
+        }
+        else {
+            res.redirect("/login");
+        }
+    })
+
+    .post( async (req, res) => {
+        const submittedSecret = req.body.secret;
+
+        User.findOne({_id: req.user._id}).exec()
+            .then( foundUser => {
+                if (foundUser){
+                    foundUser.secret = submittedSecret;
+                    foundUser.save()
+                        .then( () => {
+                            res.redirect("/secrets");
+                        })
+                }
+            })
+            .catch(err => res.send(err));
     });
 
 app.listen(3000, function() {
